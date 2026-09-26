@@ -21,6 +21,35 @@ class ActionResult(BaseModel):
     entry: dict[str, Any] | None = None
 
 
+class BatchActionPayload(BaseModel):
+    """批量处理入参：待处理记录 id 列表 + 统一动作。"""
+
+    action: str
+    entry_ids: list[int] = Field(default_factory=list)
+    remark: str | None = None
+
+
+class BatchActionItem(BaseModel):
+    """批量处理逐条结果：applied/skipped/blocked/missing/pending。"""
+
+    id: int
+    status: str
+    message: str
+
+
+class BatchActionResult(BaseModel):
+    """批量处理汇总：明细与汇总数字来自同一份计划，不会各说各话。"""
+
+    ok: bool
+    message: str
+    action: str
+    applied: int = 0
+    skipped: int = 0
+    blocked: int = 0
+    missing: int = 0
+    items: list[BatchActionItem] = Field(default_factory=list)
+
+
 class EntryPayload(BaseModel):
     """登记或修改一条业务记录时提交的字段集合。"""
 

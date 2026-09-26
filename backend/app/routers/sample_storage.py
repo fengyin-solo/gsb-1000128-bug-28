@@ -1,12 +1,22 @@
-"""样品留存接口：维护留存样品，覆盖确认处置、申请延期、登记处置等动作。"""
+"""样品留存接口：维护留存样品，覆盖确认处置、申请延期、登记处置等动作。
+
+列表页（批量）、详情页（单条）、处理入口弹窗提交到的都是同一套服务规则，
+接口层不重复任何状态判断。
+"""
 from __future__ import annotations
 
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.schemas import ActionResult, EntryPayload, PageResult
-from app.services.sample_storage import SampleStorageService
+from app.schemas import (
+    ActionResult,
+    BatchActionPayload,
+    BatchActionResult,
+    EntryPayload,
+    PageResult,
+)
+from app.services.sample_storage import BatchRuleError, SampleStorageService
 
 router = APIRouter(prefix="/api/sample_storage", tags=["样品留存"])
 
@@ -30,13 +40,25 @@ def list_entries(
     return PageResult(items=items, total=total, page=page, size=size)
 
 
-@router.get("/{entry_id}", response_model=dict)
-def get_entry(entry_id: int) -> dict:
-    """读取单条留存样品明细；不存在时给出可读的错误说明。"""
-    entry = service.get_entry(entry_id)
-    if entry is None:
-        raise HTTPException(status_code=404, detail=f"留存样品 {entry_id} 不存在或已归档")
-    return entry
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出样品留存清单：返回当前过滤条件下的全量数据。
+
+    路由需声明在 /{entry_id} 之前，否则 export 会被当成记录 id。
+    """
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "sample_storage", "total": total, "items": items}
+
+
+@router.post("/batch", response_model=BatchActionResult)
+def run_batch(payload: BatchActionPayload) -> BatchActionResult:
+    """批量处理入口：空选拦截、异常中断、重复跳过的统一口径由服务层给出。"""
+    try:
+        result = service.run_batch(payload.entry_ids, payload.action.strip())
+    except BatchRuleError as exc:
+        # 空选 / 非法动作属于前置校验失败：一条记录都不会改动。
+        return BatchActionResult(ok=False, message=exc.message, action=payload.action)
+    return BatchActionResult(**result)
 
 
 @router.post("", response_model=ActionResult)
@@ -48,18 +70,23 @@ def create_entry(payload: EntryPayload) -> ActionResult:
     return ActionResult(ok=True, message="留存样品已登记", entry=entry)
 
 
+@router.get("/{entry_id}", response_model=dict)
+def get_entry(entry_id: int) -> dict:
+    """读取单条留存样品明细；不存在时给出可读的错误说明。"""
+    entry = service.get_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"留存样品 {entry_id} 不存在或已归档")
+    return entry
+
+
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条留存样品执行确认处置、申请延期、登记处置；不允许的动作会被拦下并说明原因。"""
+    """详情页单条处置：与批量处理共用同一份判断，结论不会和列表页矛盾。"""
     action = str(payload.values.get("action") or "").strip()
-    entry, message = service.run_action(entry_id, action)
-    if entry is None:
-        return ActionResult(ok=False, message=message)
-    return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出样品留存清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "sample_storage", "total": total, "items": items}
+    try:
+        result = service.run_batch([entry_id], action)
+    except BatchRuleError as exc:
+        return ActionResult(ok=False, message=exc.message)
+    item = result["items"][0]
+    entry = service.get_entry(entry_id)
+    return ActionResult(ok=result["ok"] and item["status"] != "blocked", message=item["message"], entry=entry)

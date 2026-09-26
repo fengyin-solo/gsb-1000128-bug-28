@@ -11,6 +11,7 @@ const Report = () => import('@/views/report/index.vue')
 const Qc = () => import('@/views/qc/index.vue')
 const Deviation = () => import('@/views/deviation/index.vue')
 const SampleStorage = () => import('@/views/sample_storage/index.vue')
+const SampleStorageDetail = () => import('@/views/sample_storage/detail.vue')
 const Contract = () => import('@/views/contract/index.vue')
 const Staff = () => import('@/views/staff/index.vue')
 const Method = () => import('@/views/method/index.vue')
@@ -34,6 +35,7 @@ const router = createRouter({
     { path: '/qc', name: 'qc', component: Qc },
     { path: '/deviation', name: 'deviation', component: Deviation },
     { path: '/sample_storage', name: 'sample_storage', component: SampleStorage },
+    { path: '/sample_storage/:id(\\d+)', name: 'sample_storage_detail', component: SampleStorageDetail },
     { path: '/contract', name: 'contract', component: Contract },
     { path: '/staff', name: 'staff', component: Staff },
     { path: '/method', name: 'method', component: Method },
