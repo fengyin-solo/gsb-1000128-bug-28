@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.schemas import ActionResult, EntryPayload, PageResult
+from app.schemas import ActionResult, EntryPayload, PageResult, SampleStorageActionPayload
 from app.services.sample_storage import SampleStorageService
 
 router = APIRouter(prefix="/api/sample_storage", tags=["样品留存"])
@@ -18,16 +18,44 @@ STATUSES = ["留存中", "即将到期", "已处置", "已延期"]
 
 @router.get("", response_model=PageResult[dict])
 def list_entries(
-    keyword: str | None = Query(default=None, description="按留存编号检索"),
+    keyword: str | None = Query(default=None, description="按留存编号、样品编号或留存位置检索"),
     status: str | None = Query(default=None, description="留存中、即将到期、已处置、已延期"),
+    retention_no: str | None = Query(default=None, alias="留存编号"),
+    sample_no: str | None = Query(default=None, alias="样品编号"),
+    storage_location: str | None = Query(default=None, alias="留存位置"),
     page: int = 1,
     size: int = 20,
 ) -> PageResult[dict]:
-    """按留存编号与状态过滤样品留存列表；没有数据时返回空页，不报错。"""
+    """按留存编号、样品编号、留存位置与状态过滤列表；没有数据时返回空页，不报错。"""
     if size > 200:
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
-    items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
+    filters = {
+        "留存编号": retention_no or "",
+        "样品编号": sample_no or "",
+        "留存位置": storage_location or "",
+    }
+    items, total = service.list_entries(
+        keyword=keyword,
+        status=status,
+        filters=filters,
+        page=page,
+        size=size,
+    )
     return PageResult(items=items, total=total, page=page, size=size)
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出样品留存清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "sample_storage", "total": total, "items": items}
+
+
+@router.post("/actions", response_model=ActionResult)
+def run_actions(payload: SampleStorageActionPayload) -> ActionResult:
+    """批量处理入口：与列表、详情共用同一份动作判断，空选、中断、重复触发统一收口。"""
+    result = service.run_actions(payload.normalized_entry_ids(), payload.normalized_action())
+    return ActionResult(**result)
 
 
 @router.get("/{entry_id}", response_model=dict)
@@ -49,17 +77,18 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
-def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条留存样品执行确认处置、申请延期、登记处置；不允许的动作会被拦下并说明原因。"""
-    action = str(payload.values.get("action") or "").strip()
-    entry, message = service.run_action(entry_id, action)
-    if entry is None:
-        return ActionResult(ok=False, message=message)
-    return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出样品留存清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "sample_storage", "total": total, "items": items}
+def run_action(entry_id: int, payload: SampleStorageActionPayload) -> ActionResult:
+    """单条处理入口：复用批量处理规则，保证同一记录在任何入口得到同一结果。"""
+    entry_ids = payload.normalized_entry_ids() or [entry_id]
+    if entry_id not in entry_ids:
+        entry_ids.append(entry_id)
+    result = service.run_actions(entry_ids, payload.normalized_action())
+    entry = result["entries"][0] if result["entries"] else None
+    return ActionResult(
+        ok=result["ok"],
+        message=result["message"],
+        entry=entry,
+        entries=result["entries"],
+        processed=result["processed"],
+        skipped=result["skipped"],
+    )

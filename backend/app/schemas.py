@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 T = TypeVar("T")
 
@@ -19,6 +19,9 @@ class ActionResult(BaseModel):
     ok: bool
     message: str
     entry: dict[str, Any] | None = None
+    entries: list[dict[str, Any]] | None = None
+    processed: int | None = None
+    skipped: int | None = None
 
 
 class EntryPayload(BaseModel):
@@ -26,6 +29,44 @@ class EntryPayload(BaseModel):
 
     values: dict[str, Any] = Field(default_factory=dict)
     remark: str | None = None
+
+
+class SampleStorageActionPayload(BaseModel):
+    """样品留存处理请求：单条与批量入口共用同一份动作与记录口径。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    action: str | None = None
+    entry_ids: list[int] | None = Field(default=None, alias="entryIds")
+    ids: list[int] | None = None
+    values: dict[str, Any] = Field(default_factory=dict)
+
+    def normalized_action(self) -> str:
+        """兼容旧的 values.action 写法，动作名统一去空白。"""
+        return str(self.action or self.values.get("action") or "").strip()
+
+    def normalized_entry_ids(self) -> list[int]:
+        """兼容 values.id / values.ids，批量记录号去重后保持提交顺序。"""
+        raw_ids: list[Any] = []
+        if self.entry_ids:
+            raw_ids.extend(self.entry_ids)
+        if self.ids:
+            raw_ids.extend(self.ids)
+        legacy_ids = self.values.get("ids")
+        if isinstance(legacy_ids, list):
+            raw_ids.extend(legacy_ids)
+        legacy_id = self.values.get("id")
+        if legacy_id is not None:
+            raw_ids.append(legacy_id)
+        normalized: list[int] = []
+        for raw_id in raw_ids:
+            try:
+                entry_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if entry_id not in normalized:
+                normalized.append(entry_id)
+        return normalized
 
 
 
